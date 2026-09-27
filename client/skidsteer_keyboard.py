@@ -453,9 +453,12 @@ def main():
         sys.stdout.write(HIDE)
         sys.stdout.flush()
 
-    # Latch of the last light state (client-side, for display only). The
-    # firmware owns the real toggle; we mirror it so the HUD lamp is right.
-    lights_display = False
+    # The CLIENT owns the desired light state. We flip it on each L press
+    # and then send A=1 EVERY frame while it's on (not a one-shot pulse).
+    # The firmware makes the light follow A's level, so like the drive
+    # axes a dropped UDP packet self-heals on the next one -- no more
+    # missed toggles.
+    lights_on = False
 
     try:
         with KeyReader() as kr:
@@ -463,7 +466,6 @@ def main():
                 now = time.time()
                 keys = kr.get_keys(wait=poll_period)
                 quit_now = False
-                lights_pulse = False
 
                 for ch in keys:
                     if ch in ("\x1b", "q", "Q"):
@@ -474,8 +476,10 @@ def main():
                         held.clear()
                         continue
                     if c == "l":
+                        # Flip desired state on the LEADING edge of L only,
+                        # so OS key-repeat doesn't flip it many times.
                         if not is_held("l", now):
-                            lights_pulse = True
+                            lights_on = not lights_on
                         held["l"] = now
                         continue
                     if c == "t":
@@ -495,24 +499,22 @@ def main():
                 drive_x = (AXIS_STEP if is_held("d", now) else 0) - (AXIS_STEP if is_held("a", now) else 0)
                 arm     = (AXIS_STEP if is_held("r", now) else 0) - (AXIS_STEP if is_held("f", now) else 0)
 
-                mask = BTN["A"] if lights_pulse else 0
+                # A held HIGH the whole time lights should be on. The
+                # firmware sets the light to match this level every packet.
+                mask = BTN["A"] if lights_on else 0
                 # Bucket tilt/raise are absolute held positions, sent every
                 # frame as t= and p= so the firmware drives the servos.
                 sender.set_state(mask, drive_x, drive_y, arm, tilt, raise_)
 
-                # Mirror the firmware's light toggle for the HUD lamp.
-                if lights_pulse:
-                    lights_display = not lights_display
-
                 if hud is not None:
                     if hud.due(now):
                         hud.render(drive_x, drive_y, arm, tilt, raise_,
-                                   lights_display, link_ok=True)
+                                   lights_on, link_ok=True)
                 else:
                     sys.stdout.write(
                         "\rx=%4d y=%4d arm=%4d | raise=%4d tilt=%4d | L=%s "
                         % (drive_x, drive_y, arm, raise_, tilt,
-                           "*" if lights_display else " "))
+                           "*" if lights_on else " "))
                     sys.stdout.flush()
     finally:
         # Stop the robot, stop the sender, restore key-repeat.
