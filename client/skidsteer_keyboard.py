@@ -149,6 +149,189 @@ def clamp(v, lo=-100, hi=100):
     return max(lo, min(hi, v))
 
 
+# =====================================================================
+# Goofy animated ASCII HUD
+# =====================================================================
+
+# ANSI helpers
+CSI = "\x1b["
+def _c(code):   return CSI + code + "m"
+RESET   = _c("0")
+BOLD    = _c("1")
+DIM     = _c("2")
+YELLOW  = _c("93")
+ORANGE  = _c("33")
+CYAN    = _c("96")
+GREEN   = _c("92")
+RED     = _c("91")
+MAGENTA = _c("95")
+BLUE    = _c("94")
+WHITE   = _c("97")
+GREY    = _c("90")
+BG_SKY  = _c("48;5;24")
+
+HOME    = CSI + "H"          # cursor to top-left
+CLEAR   = CSI + "2J" + HOME  # clear screen
+HIDE    = CSI + "?25l"       # hide cursor
+SHOW    = CSI + "?25h"       # show cursor
+
+
+class HUD:
+    """Renders a big, silly, animated skidsteer dashboard each frame.
+
+    Everything is derived from the live control state so the picture
+    actually reflects what the operator is doing -- tracks spin the way
+    you drive, the arm lifts, the bucket tilts, headlights glow.
+    """
+
+    # Track-tread animation frames (they scroll to fake rotation)
+    TREADS = ["/", "-", "\\", "|"]
+
+    HYPE = [
+        "LET'S DIG!!", "VROOOM", "BEEP BEEP", "DIGGY HOLE",
+        "SCOOP MODE", "ZOOMIES", "MAXIMUM SKID", "much dirt. wow.",
+        "yeeeaaahh", "CONSTRUCTION!!", "big shovel energy",
+    ]
+
+    def __init__(self, host, port):
+        self.host = host
+        self.port = port
+        self.frame = 0
+        self.hype_i = 0
+        self.hype_t = 0.0
+
+    # --- small drawing helpers ---
+    @staticmethod
+    def _bar(val, width=10):
+        """Signed -100..100 bar centered at zero, e.g. [==|    ]."""
+        half = width // 2
+        n = int(round(abs(val) / 100.0 * half))
+        if val >= 0:
+            left = " " * half
+            right = ("=" * n).ljust(half)
+        else:
+            left = (" " * (half - n)) + ("=" * n)
+            right = " " * half
+        return "[" + left + "|" + right + "]"
+
+    def _tread(self, speed, phase):
+        """Return a 5-char animated tread strip; scroll dir = drive dir."""
+        if speed == 0:
+            return "[o o o]"
+        step = self.frame // max(1, (6 - min(5, abs(speed) // 20)))
+        direction = 1 if speed > 0 else -1
+        chars = []
+        for i in range(5):
+            idx = (direction * (step + i) + phase) % len(self.TREADS)
+            chars.append(self.TREADS[idx])
+        return "[" + "".join(chars) + "]"
+
+    def render(self, drive_x, drive_y, arm, tilt, raise_, lights, link_ok):
+        self.frame += 1
+        now = time.time()
+
+        # Mixed track powers (same math as the firmware's drive mix)
+        left = clamp(drive_y + drive_x)
+        right = clamp(drive_y - drive_x)
+
+        moving = drive_x != 0 or drive_y != 0
+        digging = tilt != 0 or arm != 0 or raise_ != 0
+
+        # rotate a hype word every ~1.2s while active
+        if (moving or digging) and now - self.hype_t > 1.2:
+            self.hype_i = (self.hype_i + 1) % len(self.HYPE)
+            self.hype_t = now
+        hype = self.HYPE[self.hype_i] if (moving or digging) else "idle... rev me up!"
+
+        # Bounce the whole rig a little while driving
+        bounce = " " if (moving and self.frame % 2 == 0) else ""
+
+        # Arm angle: a few discrete poses from arm axis + raise position
+        lift = clamp(arm + raise_ // 2)
+        if lift > 40:
+            arm_art = ["      __/", "     /   ", "  __/    "]
+        elif lift < -40:
+            arm_art = ["         ", "  ___    ", "     \\__ "]
+        else:
+            arm_art = ["         ", "  ______ ", "         "]
+
+        # Bucket tilt glyph
+        if tilt > 33:
+            bucket = "\\_)"
+        elif tilt < -33:
+            bucket = "(_/"
+        else:
+            bucket = "\\_/"
+
+        # Headlights
+        if lights:
+            beam = YELLOW + ">>>" + RESET
+            lamp = YELLOW + "*" + RESET
+        else:
+            beam = "   "
+            lamp = "o"
+
+        # Exhaust puff + dust
+        puff = MAGENTA + ("  .oO" if self.frame % 4 < 2 else "  Oo.") + RESET \
+            if moving else "     "
+        dust = GREY + ("~ * ~ * " if moving and self.frame % 2 else " * ~ * ~") + RESET \
+            if moving else ""
+
+        treadL = self._tread(left, 0)
+        treadR = self._tread(right, 2)
+
+        link = GREEN + "● UDP LIVE" + RESET if link_ok else RED + "○ ---" + RESET
+
+        # ----- assemble the scene -----
+        out = []
+        out.append(CLEAR)
+        out.append(BG_SKY + BOLD + WHITE +
+                   "  🚜  S K I D D I   C O N T R O L   D E C K  🚜  " +
+                   RESET)
+        out.append("")
+        out.append("   " + puff + "        " + ORANGE + hype + RESET)
+        out.append("   " + ORANGE + "  ||" + RESET)
+        # arm + bucket line
+        out.append("     " + GREY + arm_art[0] + RESET + "   " + beam)
+        out.append(bounce + "   " + YELLOW + "  ______________ " + RESET +
+                   GREY + arm_art[1] + RESET)
+        out.append(bounce + "   " + YELLOW + " /  " + lamp + "  SKIDDI    \\" +
+                   RESET + GREY + arm_art[2] + RESET + " " + CYAN + bucket + RESET)
+        out.append(bounce + "   " + YELLOW + "/______________ \\" + RESET)
+        out.append(bounce + "   " + WHITE + treadL + " " + treadR + RESET +
+                   "   " + dust)
+        out.append("   " + GREY + " '-(O)-'   '-(O)-' " + RESET)
+        out.append("")
+
+        # ----- gauges -----
+        out.append(CYAN + "   THROTTLE " + RESET + self._bar(drive_y) +
+                   " %+4d" % drive_y +
+                   "     " + CYAN + "STEER " + RESET + self._bar(drive_x) +
+                   " %+4d" % drive_x)
+        out.append(CYAN + "   ARM      " + RESET + self._bar(arm) +
+                   " %+4d" % arm +
+                   "     " + CYAN + "L-TRK " + RESET + self._bar(left) +
+                   " %+4d" % left)
+        out.append(CYAN + "   TILT     " + RESET + self._bar(tilt) +
+                   " %+4d" % tilt +
+                   "     " + CYAN + "R-TRK " + RESET + self._bar(right) +
+                   " %+4d" % right)
+        out.append(CYAN + "   RAISE    " + RESET + self._bar(raise_) +
+                   " %+4d" % raise_ +
+                   "     " + CYAN + "LIGHT " + RESET +
+                   ((YELLOW + "[ ON ]") if lights else (GREY + "[off ]")) + RESET)
+        out.append("")
+        out.append("   " + link + GREY +
+                   "   → %s:%d" % (self.host, self.port) + RESET)
+        out.append("")
+        out.append(DIM +
+                   "   W/S drive  A/D turn  R/F arm  T/G raise  Y/H tilt  "
+                   "L lights  SPACE stop  Q quit" + RESET)
+
+        sys.stdout.write("\n".join(out) + "\n")
+        sys.stdout.flush()
+
+
 class RepeatTuner:
     """Speed up X11 key-repeat while running, restore on exit.
 
@@ -217,6 +400,9 @@ def main():
     ap.add_argument("--no-autorepeat", action="store_true",
                     help="don't touch the OS key-repeat rate. If you use this, "
                          "raise --hold-timeout to ~0.5 to avoid stutter.")
+    ap.add_argument("--plain", action="store_true",
+                    help="disable the animated ASCII dashboard; show a simple "
+                         "one-line status instead.")
     args = ap.parse_args()
 
     poll_period = 1.0 / max(1.0, args.poll)
@@ -235,12 +421,21 @@ def main():
         t = held.get(c)
         return t is not None and (now - t) <= args.hold_timeout
 
-    print("Skidsteer keyboard control -> %s:%d (UDP, fire-and-forget)"
-          % (args.host, args.port))
-    print("W/S drive  A/D turn  R/F arm  T/G raise  Y/H tilt  "
-          "L lights  SPACE stop  Q quit")
-    if tuner.enabled:
-        print("(sped up key-repeat via xset; will restore on exit)")
+    hud = None if args.plain else HUD(args.host, args.port)
+    if args.plain:
+        print("Skidsteer keyboard control -> %s:%d (UDP, fire-and-forget)"
+              % (args.host, args.port))
+        print("W/S drive  A/D turn  R/F arm  T/G raise  Y/H tilt  "
+              "L lights  SPACE stop  Q quit")
+        if tuner.enabled:
+            print("(sped up key-repeat via xset; will restore on exit)")
+    else:
+        sys.stdout.write(HIDE)
+        sys.stdout.flush()
+
+    # Latch of the last light state (client-side, for display only). The
+    # firmware owns the real toggle; we mirror it so the HUD lamp is right.
+    lights_display = False
 
     try:
         with KeyReader() as kr:
@@ -285,12 +480,19 @@ def main():
                 # frame as t= and p= so the firmware drives the servos.
                 sender.set_state(mask, drive_x, drive_y, arm, tilt, raise_)
 
-                sys.stdout.write(
-                    "\rx=%4d y=%4d arm=%4d | raise=%4d tilt=%4d | L=%s "
-                    % (drive_x, drive_y, arm, raise_, tilt,
-                       "^" if lights_pulse else " ")
-                )
-                sys.stdout.flush()
+                # Mirror the firmware's light toggle for the HUD lamp.
+                if lights_pulse:
+                    lights_display = not lights_display
+
+                if hud is not None:
+                    hud.render(drive_x, drive_y, arm, tilt, raise_,
+                               lights_display, link_ok=True)
+                else:
+                    sys.stdout.write(
+                        "\rx=%4d y=%4d arm=%4d | raise=%4d tilt=%4d | L=%s "
+                        % (drive_x, drive_y, arm, raise_, tilt,
+                           "*" if lights_display else " "))
+                    sys.stdout.flush()
     finally:
         # Stop the robot, stop the sender, restore key-repeat.
         # Motors to zero, but hold the last bucket position.
@@ -300,7 +502,10 @@ def main():
             time.sleep(0.03)
         sender.stop()
         tuner.restore()
-        print("\nStopped.")
+        if hud is not None:
+            sys.stdout.write(RESET + SHOW + "\n")
+            sys.stdout.flush()
+        print("Stopped. Thanks for skidding! 🚜💨")
 
 
 if __name__ == "__main__":

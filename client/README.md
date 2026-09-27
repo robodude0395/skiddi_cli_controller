@@ -54,6 +54,23 @@ the serial monitor printed:
 python3 skidsteer_keyboard.py --host 192.168.1.42 --rate 30
 ```
 
+## The dashboard
+
+By default you get a big animated ASCII skidsteer that reacts to what you're
+doing, spinning treads, a lifting arm, a tilting bucket, headlight beams, dust,
+exhaust puffs, and live gauges for every axis. It's built for events and casual
+drivers, so it's deliberately loud and goofy.
+
+For a minimal terminal (or if the animation is distracting), use a plain
+one-line status instead:
+
+```sh
+python3 skidsteer_keyboard.py --plain
+```
+
+The dashboard uses ANSI colors and a full-screen redraw; any modern terminal
+handles it fine.
+
 ## Controls
 
 | Key | Action |
