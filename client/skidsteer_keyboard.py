@@ -171,7 +171,8 @@ GREY    = _c("90")
 BG_SKY  = _c("48;5;24")
 
 HOME    = CSI + "H"          # cursor to top-left
-CLEAR   = CSI + "2J" + HOME  # clear screen
+CLEAR   = CSI + "2J" + HOME  # clear whole screen (used once at startup only)
+EOL     = CSI + "K"          # erase from cursor to end of line
 HIDE    = CSI + "?25l"       # hide cursor
 SHOW    = CSI + "?25h"       # show cursor
 
@@ -193,12 +194,22 @@ class HUD:
         "yeeeaaahh", "CONSTRUCTION!!", "big shovel energy",
     ]
 
-    def __init__(self, host, port):
+    def __init__(self, host, port, fps=30):
         self.host = host
         self.port = port
         self.frame = 0
         self.hype_i = 0
         self.hype_t = 0.0
+        self._started = False       # whether we've done the one-time clear
+        self._min_dt = 1.0 / max(1.0, fps)
+        self._last_draw = 0.0
+
+    def due(self, now):
+        """Rate-limit redraws so we don't repaint at the full poll rate."""
+        if now - self._last_draw >= self._min_dt:
+            self._last_draw = now
+            return True
+        return False
 
     # --- small drawing helpers ---
     @staticmethod
@@ -283,8 +294,15 @@ class HUD:
         link = GREEN + "● UDP LIVE" + RESET if link_ok else RED + "○ ---" + RESET
 
         # ----- assemble the scene -----
+        # Anti-flicker: clear the whole screen ONCE, then on every frame
+        # just move the cursor home and overwrite in place, erasing each
+        # line to its end. No full-screen wipe = no blank flash = no flicker.
         out = []
-        out.append(CLEAR)
+        if not self._started:
+            out.append(CLEAR)
+            self._started = True
+        else:
+            out.append(HOME)
         out.append(BG_SKY + BOLD + WHITE +
                    "  🚜  S K I D D I   C O N T R O L   D E C K  🚜  " +
                    RESET)
@@ -328,7 +346,14 @@ class HUD:
                    "   W/S drive  A/D turn  R/F arm  T/G raise  Y/H tilt  "
                    "L lights  SPACE stop  Q quit" + RESET)
 
-        sys.stdout.write("\n".join(out) + "\n")
+        # The first element is a positioning control (CLEAR or HOME); keep
+        # it as-is. Every subsequent visible line gets EOL appended so any
+        # leftover characters from a previous, longer frame are erased
+        # without wiping the whole screen.
+        buf = out[0] + "\n".join(line + EOL for line in out[1:])
+        # Erase anything below the last line too (e.g. shorter frames).
+        buf += EOL + CSI + "J"
+        sys.stdout.write(buf)
         sys.stdout.flush()
 
 
@@ -403,6 +428,9 @@ def main():
     ap.add_argument("--plain", action="store_true",
                     help="disable the animated ASCII dashboard; show a simple "
                          "one-line status instead.")
+    ap.add_argument("--hud-fps", type=float, default=30.0,
+                    help="dashboard redraw rate (default: 30). Lower if the "
+                         "terminal still flickers or the CPU runs hot.")
     args = ap.parse_args()
 
     poll_period = 1.0 / max(1.0, args.poll)
@@ -421,7 +449,7 @@ def main():
         t = held.get(c)
         return t is not None and (now - t) <= args.hold_timeout
 
-    hud = None if args.plain else HUD(args.host, args.port)
+    hud = None if args.plain else HUD(args.host, args.port, fps=args.hud_fps)
     if args.plain:
         print("Skidsteer keyboard control -> %s:%d (UDP, fire-and-forget)"
               % (args.host, args.port))
@@ -485,8 +513,9 @@ def main():
                     lights_display = not lights_display
 
                 if hud is not None:
-                    hud.render(drive_x, drive_y, arm, tilt, raise_,
-                               lights_display, link_ok=True)
+                    if hud.due(now):
+                        hud.render(drive_x, drive_y, arm, tilt, raise_,
+                                   lights_display, link_ok=True)
                 else:
                     sys.stdout.write(
                         "\rx=%4d y=%4d arm=%4d | raise=%4d tilt=%4d | L=%s "
