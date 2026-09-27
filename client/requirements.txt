@@ -1,0 +1,17 @@
+# ESP32 Skidsteer keyboard client -- Python dependencies
+#
+# The client (skidsteer_keyboard.py) uses ONLY the Python standard library
+# (urllib, termios, tty, select, argparse). There are no required third-party
+# packages, so this file is intentionally empty of hard dependencies.
+#
+# It exists so you can create a clean virtual environment with a single,
+# predictable command:
+#
+#     python3 -m venv .venv
+#     source .venv/bin/activate
+#     pip install -r requirements.txt   # no-op today, future-proof
+#
+# Requires Python 3.6+ (uses f-string-free stdlib only; tested on 3.8+).
+#
+# --- Optional extras (uncomment if you want them) ---
+# requests            # nicer HTTP client if you prefer it over urllib
