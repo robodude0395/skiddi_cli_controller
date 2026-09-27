@@ -185,13 +185,31 @@ class HUD:
     you drive, the arm lifts, the bucket tilts, headlights glow.
     """
 
-    # Track-tread animation frames (they scroll to fake rotation)
-    TREADS = ["/", "-", "\\", "|"]
-
     HYPE = [
         "LET'S DIG!!", "VROOOM", "BEEP BEEP", "DIGGY HOLE",
         "SCOOP MODE", "ZOOMIES", "MAXIMUM SKID", "much dirt. wow.",
         "yeeeaaahh", "CONSTRUCTION!!", "big shovel energy",
+    ]
+
+    # The skidsteer graphic, one line per list entry. Kept as an explicit
+    # list (not a triple-quoted raw string) because the art's last line
+    # ends in a backslash, and a Python raw string can't end in one.
+    # Backslashes here are escaped (\\), so each pair renders as one.
+    RIG = [
+        "         ______________",
+        "        /.----------..-'",
+        "     -. ||           \\\\",
+        " .----'-||-.          \\\\",
+        " |o _   || |           \\\\",
+        " | [_]  || |_...-----.._\\\\",
+        " | [_]  ||.'            `-._ _",
+        " | [_]  '.O)_...-----....._ `.\\",
+        " / [_]o .' _ _'''''''''_ _ `. `.     __",
+        "|______/.'  _  `.---.'  _  `.\\  `._./  \\",
+        "|'''''/, .' _ '. . , .' _ '. .`. .o'|   \\",
+        "`---..|; : (_) : ;-; : (_) : ;-'`--.|    \\",
+        "       ' '. _ .' ' ' '. _ .' '      /     \\",
+        "  LGB   `._ _ _,'   `._ _ _,'       `._____\\",
     ]
 
     def __init__(self, host, port, fps=30):
@@ -225,18 +243,6 @@ class HUD:
             right = " " * half
         return "[" + left + "|" + right + "]"
 
-    def _tread(self, speed, phase):
-        """Return a 5-char animated tread strip; scroll dir = drive dir."""
-        if speed == 0:
-            return "[o o o]"
-        step = self.frame // max(1, (6 - min(5, abs(speed) // 20)))
-        direction = 1 if speed > 0 else -1
-        chars = []
-        for i in range(5):
-            idx = (direction * (step + i) + phase) % len(self.TREADS)
-            chars.append(self.TREADS[idx])
-        return "[" + "".join(chars) + "]"
-
     def render(self, drive_x, drive_y, arm, tilt, raise_, lights, link_ok):
         self.frame += 1
         now = time.time()
@@ -257,39 +263,14 @@ class HUD:
         # Bounce the whole rig a little while driving
         bounce = " " if (moving and self.frame % 2 == 0) else ""
 
-        # Arm angle: a few discrete poses from arm axis + raise position
-        lift = clamp(arm + raise_ // 2)
-        if lift > 40:
-            arm_art = ["      __/", "     /   ", "  __/    "]
-        elif lift < -40:
-            arm_art = ["         ", "  ___    ", "     \\__ "]
-        else:
-            arm_art = ["         ", "  ______ ", "         "]
+        # Headlight beam (shown off the front only when lights are on)
+        beam = YELLOW + (">>>>" if self.frame % 2 else "->->") + RESET
 
-        # Bucket tilt glyph
-        if tilt > 33:
-            bucket = "\\_)"
-        elif tilt < -33:
-            bucket = "(_/"
-        else:
-            bucket = "\\_/"
-
-        # Headlights
-        if lights:
-            beam = YELLOW + ">>>" + RESET
-            lamp = YELLOW + "*" + RESET
-        else:
-            beam = "   "
-            lamp = "o"
-
-        # Exhaust puff + dust
+        # Exhaust puff + dust, only while moving
         puff = MAGENTA + ("  .oO" if self.frame % 4 < 2 else "  Oo.") + RESET \
             if moving else "     "
-        dust = GREY + ("~ * ~ * " if moving and self.frame % 2 else " * ~ * ~") + RESET \
+        dust = GREY + ("~ * ~ * " if self.frame % 2 else " * ~ * ~") + RESET \
             if moving else ""
-
-        treadL = self._tread(left, 0)
-        treadR = self._tread(right, 2)
 
         link = GREEN + "● UDP LIVE" + RESET if link_ok else RED + "○ ---" + RESET
 
@@ -307,18 +288,29 @@ class HUD:
                    "  🚜  S K I D D I   C O N T R O L   D E C K  🚜  " +
                    RESET)
         out.append("")
-        out.append("   " + puff + "        " + ORANGE + hype + RESET)
-        out.append("   " + ORANGE + "  ||" + RESET)
-        # arm + bucket line
-        out.append("     " + GREY + arm_art[0] + RESET + "   " + beam)
-        out.append(bounce + "   " + YELLOW + "  ______________ " + RESET +
-                   GREY + arm_art[1] + RESET)
-        out.append(bounce + "   " + YELLOW + " /  " + lamp + "  SKIDDI    \\" +
-                   RESET + GREY + arm_art[2] + RESET + " " + CYAN + bucket + RESET)
-        out.append(bounce + "   " + YELLOW + "/______________ \\" + RESET)
-        out.append(bounce + "   " + WHITE + treadL + " " + treadR + RESET +
-                   "   " + dust)
-        out.append("   " + GREY + " '-(O)-'   '-(O)-' " + RESET)
+
+        # Hype word + exhaust puff floating above the rig.
+        out.append("   " + puff + "        " + ORANGE + BOLD + hype + RESET)
+
+        # The rig itself. Color it, tint the wheels green while rolling,
+        # and add a headlight beam off the front + dust off the back.
+        rig_color = YELLOW
+        wheel_color = GREEN if moving else GREY
+        pad = " " if bounce else ""      # 1-space horizontal jiggle while driving
+
+        for i, ln in enumerate(self.RIG):
+            # Tint the wheel rows (the ": (_) :" rows) a different color.
+            body = ln
+            if "(_)" in body:
+                body = body.replace("(_)", wheel_color + "(_)" + rig_color)
+            line = "  " + pad + rig_color + body + RESET
+            # Headlight beam off the top-front of the machine.
+            if i == 1 and lights:
+                line += " " + beam
+            # Dust kicking up behind the tracks on the bottom rows.
+            if i >= 11 and dust:
+                line += "  " + dust
+            out.append(line)
         out.append("")
 
         # ----- gauges -----
